@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scitex-container"
+version = "0.1.0"
+description = "Unified container management for Apptainer and Docker"
+readme = "README.md"
+license = "AGPL-3.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "Yusuke Watanabe", email = "ywatanabe@scitex.ai" },
+]
+keywords = ["apptainer", "singularity", "docker", "container", "sandbox", "mcp"]
+
+dependencies = [
+    "click",
+    "packaging",
+]
+
+[project.optional-dependencies]
+mcp = ["fastmcp>=2.0.0"]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
+all = ["fastmcp>=2.0.0", "pytest>=7.0.0", "pytest-cov>=4.0.0"]
+
+[project.scripts]
+scitex-container = "scitex_container._cli:main"
+scitex-container-mcp = "scitex_container.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/ywatanabe1989/scitex-container"
+Repository = "https://github.com/ywatanabe1989/scitex-container.git"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scitex_container"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
