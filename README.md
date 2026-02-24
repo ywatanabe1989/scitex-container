@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://scitex.ai">
-    <img src="https://raw.githubusercontent.com/ywatanabe1989/scitex-python/main/docs/assets/logos/scitex-logo-transparent.png" alt="SciTeX" width="300">
+    <img src="docs/scitex-logo-transparent.png" alt="SciTeX" width="300">
   </a>
 </p>
 

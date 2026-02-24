@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from ._sandbox import is_sandbox
+
 logger = logging.getLogger(__name__)
 
 # TeX Live binary names to bind-mount from the host prefix
@@ -29,25 +31,6 @@ _TEXLIVE_SHARE_DIRS = [
     "texlive",
     "texmf-dist",
 ]
-
-
-def is_sandbox(container_path: str) -> bool:
-    """Auto-detect sandbox (directory) vs SIF (file) by path extension.
-
-    A path ending in ``.sif`` is treated as a SIF image; anything else
-    (including bare directory names) is treated as a sandbox directory.
-
-    Parameters
-    ----------
-    container_path : str
-        Path to the container (SIF file or sandbox directory).
-
-    Returns
-    -------
-    bool
-        True if container_path is a sandbox directory.
-    """
-    return not container_path.rstrip("/").endswith(".sif")
 
 
 def build_dev_pythonpath(dev_repos: list[dict]) -> str:
