@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://scitex.ai">
-    <img src="docs/scitex-logo-transparent.png" alt="SciTeX" width="300">
+    <img src="docs/scitex-logo-blue-cropped.png" alt="SciTeX" width="400">
   </a>
 </p>
 
@@ -55,19 +55,59 @@ scitex-container list
 scitex-container switch 2.19.5
 scitex-container rollback
 
-# Sandbox operations
-scitex-container sandbox create --sif scitex-final.sif
-
-# Host package installation (TeX Live, ImageMagick)
-scitex-container host install
-
-# Docker operations
-scitex-container docker rebuild
-scitex-container docker restart
-
 # Show all commands
 scitex-container --help-recursive
 ```
+
+<details>
+<summary><strong>Sandbox Operations</strong></summary>
+
+<br>
+
+```bash
+scitex-container sandbox create --sif scitex-final.sif
+scitex-container sandbox maintain --sandbox scitex-sandbox/
+```
+
+</details>
+
+<details>
+<summary><strong>Host Package Management</strong></summary>
+
+<br>
+
+```bash
+scitex-container host install          # Install TeX Live + ImageMagick
+scitex-container host check            # Verify host packages
+scitex-container host mounts           # Show configured bind mounts
+```
+
+</details>
+
+<details>
+<summary><strong>Docker Operations</strong></summary>
+
+<br>
+
+```bash
+scitex-container docker rebuild        # Rebuild Compose services
+scitex-container docker restart        # Restart services
+```
+
+</details>
+
+<details>
+<summary><strong>Verification & Reproducibility</strong></summary>
+
+<br>
+
+```bash
+scitex-container verify                # Verify SIF integrity against lock files
+scitex-container env-snapshot          # Capture environment reproducibility snapshot
+scitex-container env-snapshot --json   # JSON output for Clew integration
+```
+
+</details>
 
 ## Python API
 
@@ -76,10 +116,9 @@ import scitex_container as sc
 
 # Apptainer container management
 sc.apptainer.build(def_name="scitex-final", sandbox=True)
-sc.apptainer.switch_version("2.19.5", containers_dir="/opt/containers")
 sc.apptainer.list_versions(containers_dir="/opt/containers")
+sc.apptainer.switch_version("2.19.5", containers_dir="/opt/containers")
 sc.apptainer.rollback(containers_dir="/opt/containers")
-sc.apptainer.status()
 
 # Host package management
 sc.host.check_packages()
@@ -88,11 +127,39 @@ sc.host.check_packages()
 sc.docker.rebuild(env="prod")
 sc.docker.restart(env="prod")
 
-# Environment reproducibility snapshot
+# Environment reproducibility snapshot (Clew integration point)
 snapshot = sc.env_snapshot()
 ```
 
-## MCP Server (AI Agent Integration)
+<details>
+<summary><strong>Verification API</strong></summary>
+
+<br>
+
+```python
+# Verify container integrity
+result = sc.apptainer.verify(sif_path="/opt/containers/scitex-final.sif")
+# Returns: {sif, def_origin, pip_lock, dpkg_lock, overall}
+
+# Command builder for scitex-cloud terminal integration
+args = sc.apptainer.build_exec_args(
+    container_path="/opt/containers/scitex-final.sif",
+    username="user01",
+    host_user_dir=Path("/data/users/user01"),
+    host_project_dir=Path("/data/projects/proj01"),
+    project_slug="proj01",
+    texlive_prefix="/usr",
+)
+```
+
+</details>
+
+## MCP Server
+
+<details>
+<summary><strong>AI Agent Integration</strong></summary>
+
+<br>
 
 scitex-container exposes an MCP server so AI agents (Claude, etc.) can
 manage containers autonomously.
@@ -116,11 +183,16 @@ scitex-container mcp install
 | `docker_rebuild` | Rebuild Docker Compose services |
 | `host_install` | Install host-side packages |
 | `env_snapshot` | Capture reproducibility snapshot |
+| `verify` | Verify SIF integrity against lock files |
+
+</details>
 
 ---
 
 > AGPL-3.0 — because research infrastructure deserves the same freedoms as the software it runs on.
 
 <p align="center">
-  <a href="https://scitex.ai" target="_blank">scitex.ai</a>
+  <a href="https://scitex.ai" target="_blank"><img src="docs/scitex-icon-navy-inverted.png" alt="SciTeX" width="40"/></a>
 </p>
+
+<!-- EOF -->

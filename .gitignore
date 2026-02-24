@@ -210,6 +210,8 @@ data/*
 !docs/sphinx/_static/*.png
 !docs/sphinx/generate_images_out/*.png
 !docs/scitex-logo-transparent.png
+!docs/scitex-logo-blue-cropped.png
+!docs/scitex-icon-navy-inverted.png
 **/*.pth
 **/*.pt
 **/*.chk
