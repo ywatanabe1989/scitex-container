@@ -34,15 +34,26 @@ def is_sandbox(path: str | Path) -> bool:
     return not str(path).rstrip("/").endswith(".sif")
 
 
-def create(source_sif: str | Path, output_dir: str | Path) -> Path:
-    """Convert a SIF image to a sandbox directory.
+def create(
+    source: str | Path,
+    containers_dir: str | Path | None = None,
+    *,
+    output_dir: str | Path | None = None,
+) -> Path:
+    """Build a sandbox directory from a SIF image or .def file.
+
+    Creates a timestamped sandbox (``sandbox-YYYYMMDD_HHMMSS/``) and
+    updates the ``current-sandbox`` symlink to point to it.
 
     Parameters
     ----------
-    source_sif : str or Path
-        Path to the source .sif file.
-    output_dir : str or Path
-        Path for the output sandbox directory.
+    source : str or Path
+        Path to the source ``.sif`` file or ``.def`` file.
+    containers_dir : str or Path, optional
+        Parent directory for sandbox output and symlink.
+        Defaults to source file's parent directory.
+    output_dir : str or Path, optional
+        Explicit output path (overrides timestamped naming).
 
     Returns
     -------
@@ -52,21 +63,29 @@ def create(source_sif: str | Path, output_dir: str | Path) -> Path:
     Raises
     ------
     FileNotFoundError
-        If the source SIF does not exist or apptainer is not found.
+        If the source file does not exist.
     RuntimeError
-        If the conversion fails.
+        If the build fails.
     """
-    source_sif = Path(source_sif)
-    output_dir = Path(output_dir)
+    from datetime import datetime
 
-    if not source_sif.exists():
-        raise FileNotFoundError(f"SIF not found: {source_sif}")
+    source = Path(source)
+    if not source.exists():
+        raise FileNotFoundError(f"Source not found: {source}")
+
+    parent = Path(containers_dir) if containers_dir else source.parent
+
+    if output_dir:
+        sandbox_dir = Path(output_dir)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        sandbox_dir = parent / f"sandbox-{timestamp}"
 
     cmd = detect_container_cmd()
-    logger.info("Creating sandbox %s from %s", output_dir, source_sif.name)
+    logger.info("Creating sandbox %s from %s", sandbox_dir.name, source.name)
 
     result = subprocess.run(
-        [cmd, "build", "--sandbox", "--fakeroot", str(output_dir), str(source_sif)],
+        [cmd, "build", "--sandbox", "--fakeroot", str(sandbox_dir), str(source)],
         capture_output=False,
     )
     if result.returncode != 0:
@@ -74,8 +93,31 @@ def create(source_sif: str | Path, output_dir: str | Path) -> Path:
             f"Sandbox creation failed with exit code {result.returncode}"
         )
 
-    logger.info("Sandbox created: %s", output_dir)
-    return output_dir
+    _update_sandbox_symlink(parent, sandbox_dir)
+    logger.info("Sandbox created: %s", sandbox_dir)
+    return sandbox_dir
+
+
+def _update_sandbox_symlink(containers_dir: Path, sandbox_dir: Path) -> None:
+    """Create or update the current-sandbox symlink atomically."""
+    link_path = containers_dir / "current-sandbox"
+    target_name = sandbox_dir.name
+
+    tmp_link = containers_dir / f".current-sandbox.tmp.{id(sandbox_dir)}"
+    try:
+        subprocess.run(
+            ["ln", "-sfn", target_name, str(tmp_link)],
+            check=True,
+        )
+        subprocess.run(
+            ["mv", "-Tf", str(tmp_link), str(link_path)],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        tmp_link.unlink(missing_ok=True)
+        raise
+
+    logger.info("Symlink updated: current-sandbox -> %s", target_name)
 
 
 def maintain(sandbox_dir: str | Path, command: list[str]) -> int:

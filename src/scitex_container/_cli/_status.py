@@ -25,6 +25,8 @@ def status():
 
 def _show_apptainer_status() -> None:
     """Print Apptainer section of the status dashboard."""
+    from pathlib import Path
+
     click.secho("Apptainer:", fg="cyan", bold=True)
 
     try:
@@ -44,12 +46,33 @@ def _show_apptainer_status() -> None:
         click.secho(f"  Error: {exc}", fg="red")
         return
 
-    if active:
-        click.echo("  Mode:    SIF")
+    # Detect mode: check if current.sif points to a directory (sandbox) or file (SIF)
+    current_link = Path(cdir) / "current.sif"
+    sandboxes = sorted(Path(cdir).glob("*-sandbox"))
+    sandbox_dirs = [d for d in sandboxes if d.is_dir()]
+
+    if current_link.is_symlink():
+        target = current_link.resolve()
+        if target.is_dir():
+            click.secho(f"  Mode:    sandbox", fg="yellow", bold=True)
+            click.secho(f"  Active:  {target.name}/", fg="green")
+        elif active:
+            click.secho("  Mode:    SIF", bold=True)
+            click.secho(f"  Active:  scitex-v{active}.sif", fg="green")
+        else:
+            click.secho("  Active:  none", fg="yellow")
+    elif active:
+        click.secho("  Mode:    SIF", bold=True)
         click.secho(f"  Active:  scitex-v{active}.sif", fg="green")
     else:
         click.secho("  Active:  none", fg="yellow")
 
+    # Show sandbox directories
+    if sandbox_dirs:
+        names = [d.name for d in sandbox_dirs]
+        click.echo(f"  Sandboxes: {', '.join(names)}")
+
+    # Show SIF versions
     if versions:
         parts = []
         for v in versions:
@@ -58,9 +81,9 @@ def _show_apptainer_status() -> None:
                 parts.append(click.style(label + " (active)", fg="green"))
             else:
                 parts.append(label)
-        click.echo(f"  Versions: {', '.join(parts)}")
+        click.echo(f"  SIF versions: {', '.join(parts)}")
     else:
-        click.secho("  Versions: none built yet", fg="yellow")
+        click.secho("  SIF versions: none built yet", fg="yellow")
 
 
 def _show_host_status() -> None:

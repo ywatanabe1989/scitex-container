@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # Timestamp: "2026-02-25"
 # File: src/scitex_container/apptainer/_versioning.py
-"""Container version management: list, switch, rollback, deploy, cleanup."""
+"""Container version management: list, switch, rollback, deploy, cleanup.
+
+Supports both SIF images (scitex-v*.sif) and sandbox directories
+(sandbox-YYYYMMDD_HHMMSS/).
+"""
 
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _VERSION_RE = re.compile(r"^scitex-v(.+)\.sif$")
 _BASE_RE = re.compile(r"^scitex-base-v(\d+)\.sif$")
+_SANDBOX_RE = re.compile(r"^sandbox-(\d{8}_\d{6})$")
 
 
 def _human_size(nbytes: int) -> str:

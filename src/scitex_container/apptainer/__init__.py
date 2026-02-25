@@ -26,6 +26,14 @@ from ._versioning import (
     rollback,
     switch_version,
 )
+from ._sandbox_versioning import (
+    cleanup_sandboxes,
+    cleanup_sifs,
+    get_active_sandbox,
+    list_sandboxes,
+    rollback_sandbox,
+    switch_sandbox,
+)
 
 __all__ = [
     # build
@@ -35,7 +43,14 @@ __all__ = [
     "sandbox_maintain",
     "sandbox_to_sif",
     "is_sandbox",
-    # versioning
+    # sandbox versioning
+    "list_sandboxes",
+    "get_active_sandbox",
+    "switch_sandbox",
+    "rollback_sandbox",
+    "cleanup_sandboxes",
+    "cleanup_sifs",
+    # SIF versioning
     "list_versions",
     "get_active_version",
     "switch_version",
