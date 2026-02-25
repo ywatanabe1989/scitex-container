@@ -182,6 +182,56 @@ def sandbox_cleanup(keep, containers_dir):
         click.secho("No old sandboxes to remove.", fg="green")
 
 
+@sandbox.command(name="update")
+@click.option("--sandbox-dir", "-s", type=click.Path(), help="Sandbox directory path.")
+@click.option(
+    "--proj-root",
+    "-r",
+    type=click.Path(),
+    help="Project root containing repos (default: ~/proj).",
+)
+@click.option("--pkg", "-p", "package", type=str, help="Update only this package.")
+@click.option("--deps", is_flag=True, help="Install dependencies too (slower).")
+def sandbox_update(sandbox_dir, proj_root, package, deps):
+    """Incrementally update ecosystem packages in the sandbox (fast)."""
+    from pathlib import Path
+
+    from scitex_container.apptainer import sandbox_update as do_update
+
+    if not sandbox_dir:
+        click.secho("Error: --sandbox-dir/-s is required.", fg="red", err=True)
+        raise SystemExit(1)
+
+    packages = (package,) if package else None
+
+    try:
+        results = do_update(
+            sandbox_dir=Path(sandbox_dir),
+            proj_root=Path(proj_root) if proj_root else None,
+            packages=packages,
+            install_deps=deps,
+        )
+    except FileNotFoundError as exc:
+        click.secho(str(exc), fg="red", err=True)
+        raise SystemExit(1)
+
+    ok = sum(1 for v in results.values() if v == "ok")
+    failed = sum(1 for v in results.values() if v == "failed")
+    skipped = sum(1 for v in results.values() if v == "skipped")
+
+    for pkg, status in results.items():
+        color = {"ok": "green", "failed": "red", "skipped": "yellow"}[status]
+        click.secho(f"  {status.upper():7s} {pkg}", fg=color)
+
+    click.echo()
+    if failed:
+        click.secho(f"Done: {ok} ok, {failed} failed, {skipped} skipped", fg="yellow")
+        click.echo("Tip: use --deps if packages have new dependencies")
+        raise SystemExit(1)
+    else:
+        click.secho(f"Done: {ok} ok, {skipped} skipped", fg="green")
+
+
 @sandbox.command(name="configure-ps1")
 @click.option("--sandbox-dir", "-s", type=click.Path(), help="Sandbox directory path.")
 @click.option("--ps1", default=r"\W $ ", show_default=True, help="PS1 prompt string.")

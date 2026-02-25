@@ -206,6 +206,131 @@ def maintain(sandbox_dir: str | Path, command: list[str]) -> int:
     return result.returncode
 
 
+# Package name -> directory name mapping (when they differ)
+_PKG_DIR_MAP = {
+    "scitex": "scitex-python",
+}
+
+_PKG_DIR_FALLBACK = {
+    "scitex": "scitex-code",
+}
+
+# Default ecosystem packages to update
+_DEFAULT_PACKAGES = (
+    "scitex",
+    "figrecipe",
+    "scitex-writer",
+    "scitex-dataset",
+    "crossref-local",
+    "openalex-local",
+    "socialia",
+    "scitex-linter",
+    "scitex-container",
+)
+
+
+def _resolve_pkg_dir(pkg: str, proj_root: Path) -> Path | None:
+    """Resolve a package name to its local directory path."""
+    primary = _PKG_DIR_MAP.get(pkg, pkg)
+    candidate = proj_root / primary
+    if candidate.is_dir():
+        return candidate
+
+    fallback = _PKG_DIR_FALLBACK.get(pkg)
+    if fallback:
+        candidate = proj_root / fallback
+        if candidate.is_dir():
+            return candidate
+
+    return None
+
+
+def update(
+    sandbox_dir: str | Path,
+    *,
+    proj_root: str | Path | None = None,
+    packages: tuple[str, ...] | None = None,
+    install_deps: bool = False,
+) -> dict[str, str]:
+    """Incrementally update ecosystem packages inside an existing sandbox.
+
+    Runs ``pip install`` for each package from local repos, avoiding a
+    full sandbox rebuild.  Ideal for active development.
+
+    Parameters
+    ----------
+    sandbox_dir : str or Path
+        Path to the sandbox directory (or ``current-sandbox`` symlink).
+    proj_root : str or Path, optional
+        Directory containing all ecosystem repos.
+        Defaults to ``~/proj``.
+    packages : tuple[str, ...], optional
+        Package names to install. Defaults to all ecosystem packages.
+    install_deps : bool
+        If True, install dependencies too. If False (default), uses
+        ``--no-deps`` for faster installs.
+
+    Returns
+    -------
+    dict[str, str]
+        Mapping of package name to result: "ok", "failed", or "skipped".
+    """
+    sandbox_dir = Path(sandbox_dir)
+    if not sandbox_dir.exists():
+        raise FileNotFoundError(f"Sandbox directory not found: {sandbox_dir}")
+
+    if proj_root is None:
+        proj_root = Path.home() / "proj"
+    else:
+        proj_root = Path(proj_root)
+
+    if packages is None:
+        packages = _DEFAULT_PACKAGES
+
+    cmd = detect_container_cmd()
+    pip_flags = [] if install_deps else ["--no-deps"]
+    results: dict[str, str] = {}
+
+    for pkg in packages:
+        pkg_path = _resolve_pkg_dir(pkg, proj_root)
+        if pkg_path is None:
+            logger.warning("Package %s not found in %s, skipping", pkg, proj_root)
+            results[pkg] = "skipped"
+            continue
+
+        logger.info("Installing %s from %s", pkg, pkg_path)
+        result = subprocess.run(
+            [
+                cmd,
+                "exec",
+                "--writable",
+                "--fakeroot",
+                "--bind",
+                f"{proj_root}:{proj_root}",
+                str(sandbox_dir),
+                "pip",
+                "install",
+                *pip_flags,
+                str(pkg_path),
+            ],
+            capture_output=True,
+        )
+
+        if result.returncode == 0:
+            results[pkg] = "ok"
+            logger.info("Installed %s successfully", pkg)
+        else:
+            results[pkg] = "failed"
+            stderr = result.stderr.decode(errors="replace").strip()
+            logger.error(
+                "Failed to install %s: %s",
+                pkg,
+                stderr[-200:] if stderr else "unknown error",
+            )
+
+    return results
+
+
 def to_sif(sandbox_dir: str | Path, output_sif: str | Path) -> Path:
     """Convert a sandbox directory back to a SIF image.
 

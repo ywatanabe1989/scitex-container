@@ -16,6 +16,7 @@ from ._sandbox import create as sandbox_create
 from ._sandbox import is_sandbox
 from ._sandbox import maintain as sandbox_maintain
 from ._sandbox import to_sif as sandbox_to_sif
+from ._sandbox import update as sandbox_update
 from ._status import status
 from ._utils import detect_container_cmd, find_containers_dir
 from ._verify import verify
@@ -44,6 +45,7 @@ __all__ = [
     "sandbox_maintain",
     "sandbox_to_sif",
     "sandbox_configure_ps1",
+    "sandbox_update",
     "is_sandbox",
     # sandbox versioning
     "list_sandboxes",
