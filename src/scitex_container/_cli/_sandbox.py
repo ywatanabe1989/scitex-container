@@ -182,6 +182,23 @@ def sandbox_cleanup(keep, containers_dir):
         click.secho("No old sandboxes to remove.", fg="green")
 
 
+@sandbox.command(name="configure-ps1")
+@click.option("--sandbox-dir", "-s", type=click.Path(), help="Sandbox directory path.")
+@click.option("--ps1", default=r"\W $ ", show_default=True, help="PS1 prompt string.")
+def sandbox_configure_ps1(sandbox_dir, ps1):
+    r"""Configure PS1 prompt in a sandbox (default: \\W $ )."""
+    from pathlib import Path
+
+    from scitex_container.apptainer import sandbox_configure_ps1 as do_configure
+
+    if not sandbox_dir:
+        click.secho("Error: --sandbox-dir/-s is required.", fg="red", err=True)
+        raise SystemExit(1)
+
+    do_configure(sandbox_dir=Path(sandbox_dir), ps1=ps1)
+    click.secho(f"PS1 configured: {ps1}", fg="green")
+
+
 @sandbox.command(name="purge-sifs")
 @click.option(
     "--dir", "-d", "containers_dir", type=click.Path(), help="Containers directory."

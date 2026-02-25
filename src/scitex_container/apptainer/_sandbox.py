@@ -94,6 +94,7 @@ def create(
         )
 
     _update_sandbox_symlink(parent, sandbox_dir)
+    configure_ps1(sandbox_dir)
     logger.info("Sandbox created: %s", sandbox_dir)
     return sandbox_dir
 
@@ -118,6 +119,49 @@ def _update_sandbox_symlink(containers_dir: Path, sandbox_dir: Path) -> None:
         raise
 
     logger.info("Symlink updated: current-sandbox -> %s", target_name)
+
+
+def configure_ps1(sandbox_dir: str | Path, default_ps1: str = r"\W $ ") -> None:
+    r"""Set PS1 prompt in a sandbox's environment script.
+
+    Writes a shell snippet that reads ``SCITEX_CLOUD_APPTAINER_PS1`` at runtime,
+    falling back to *default_ps1*.  Users override by passing
+    ``--env SCITEX_CLOUD_APPTAINER_PS1='(mylab) \\W $ '`` to apptainer.
+
+    Apptainer's ``99-base.sh`` defaults to ``PS1="Apptainer> "``
+    only when PS1 is unset.  Setting PS1 in ``90-environment.sh``
+    (the ``%environment`` section) runs first and prevents that.
+
+    Parameters
+    ----------
+    sandbox_dir : str or Path
+        Path to the sandbox directory.
+    default_ps1 : str
+        Default PS1 when ``SCITEX_CLOUD_APPTAINER_PS1`` is not set.
+    """
+    import re
+
+    sandbox_dir = Path(sandbox_dir)
+    env_script = sandbox_dir / ".singularity.d" / "env" / "90-environment.sh"
+
+    if not env_script.exists():
+        logger.warning("Environment script not found: %s", env_script)
+        return
+
+    content = env_script.read_text()
+    # Use shell-level variable expansion so users can override at runtime
+    ps1_line = '\nexport PS1="${SCITEX_CLOUD_APPTAINER_PS1:-\\\\W \\$ }"\n'
+
+    if "export PS1=" in content:
+        content = re.sub(r"\n\s*export PS1=.*\n", ps1_line, content)
+    else:
+        content += ps1_line
+
+    env_script.write_text(content)
+    logger.info(
+        "PS1 configured (default: %s, override: SCITEX_CLOUD_APPTAINER_PS1)",
+        default_ps1,
+    )
 
 
 def maintain(sandbox_dir: str | Path, command: list[str]) -> int:

@@ -11,6 +11,7 @@ from ._command_builder import (
     build_srun_command,
 )
 from ._freeze import freeze
+from ._sandbox import configure_ps1 as sandbox_configure_ps1
 from ._sandbox import create as sandbox_create
 from ._sandbox import is_sandbox
 from ._sandbox import maintain as sandbox_maintain
@@ -42,6 +43,7 @@ __all__ = [
     "sandbox_create",
     "sandbox_maintain",
     "sandbox_to_sif",
+    "sandbox_configure_ps1",
     "is_sandbox",
     # sandbox versioning
     "list_sandboxes",
