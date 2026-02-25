@@ -291,6 +291,12 @@ def update(
     pip_flags = [] if install_deps else ["--no-deps"]
     results: dict[str, str] = {}
 
+    # Ensure bind mount destination exists inside sandbox
+    # (--writable mode can't auto-create mount points)
+    sandbox_real = sandbox_dir.resolve()
+    mount_dest = sandbox_real / str(proj_root).lstrip("/")
+    mount_dest.mkdir(parents=True, exist_ok=True)
+
     for pkg in packages:
         pkg_path = _resolve_pkg_dir(pkg, proj_root)
         if pkg_path is None:
