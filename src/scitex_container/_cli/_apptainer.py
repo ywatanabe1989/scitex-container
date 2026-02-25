@@ -11,6 +11,7 @@ import click
 def register(main: click.Group) -> None:
     """Register all Apptainer commands onto main."""
     main.add_command(build)
+    main.add_command(freeze)
     main.add_command(list_containers)
     main.add_command(switch)
     main.add_command(rollback)
@@ -49,6 +50,28 @@ def build(name, sandbox, base, force, output_dir):
             fg="yellow",
             err=True,
         )
+        raise SystemExit(1)
+
+
+@click.command()
+@click.argument("sif_path", type=click.Path(exists=True))
+@click.option(
+    "--output-dir", "-o", type=click.Path(), help="Output directory for lock files."
+)
+def freeze(sif_path, output_dir):
+    """Extract pinned package versions (pip, dpkg, npm) from a built SIF."""
+    from scitex_container.apptainer import freeze as do_freeze
+
+    try:
+        lock_files = do_freeze(sif_path=sif_path, output_dir=output_dir)
+        click.secho("Lock files generated:", fg="green")
+        for kind, path in lock_files.items():
+            click.echo(f"  {kind}: {path}")
+    except FileNotFoundError as exc:
+        click.secho(str(exc), fg="red", err=True)
+        raise SystemExit(1)
+    except RuntimeError as exc:
+        click.secho(f"Freeze failed: {exc}", fg="red", err=True)
         raise SystemExit(1)
 
 
