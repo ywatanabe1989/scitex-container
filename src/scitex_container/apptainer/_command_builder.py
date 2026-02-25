@@ -190,6 +190,10 @@ def build_exec_args(
         f"USER={username}",
         "--env",
         f"LOGNAME={username}",
+        "--env",
+        "SHELL=/bin/bash",
+        "--env",
+        "PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
     ]
 
     if dev_pythonpath:
