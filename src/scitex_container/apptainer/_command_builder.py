@@ -169,8 +169,9 @@ def build_exec_args(
 
     args: list[str] = ["apptainer", "exec"]
 
-    if not sandbox:
-        args.append("--containall")
+    # Always isolate — both SIF and sandbox need --containall
+    # to prevent host filesystem leakage and ensure user isolation
+    args.append("--containall")
 
     args += [
         "--cleanenv",
