@@ -16,6 +16,7 @@ from ._apptainer import (
     build,
     cleanup,
     deploy,
+    freeze,
     list_containers,
     rollback,
     switch,
@@ -64,6 +65,7 @@ def main(ctx, help_recursive):
 
 # Apptainer commands (top-level)
 main.add_command(build)
+main.add_command(freeze)
 main.add_command(list_containers)
 main.add_command(switch)
 main.add_command(rollback)
