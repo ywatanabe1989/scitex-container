@@ -8,6 +8,9 @@ from ._command_builder import (
     build_dev_pythonpath,
     build_exec_args,
     build_host_mount_binds,
+    build_instance_start_script,
+    build_sbatch_command,
+    build_shell_in_allocation_command,
     build_srun_command,
 )
 from ._freeze import freeze
@@ -64,6 +67,9 @@ __all__ = [
     # command builder
     "build_exec_args",
     "build_srun_command",
+    "build_instance_start_script",
+    "build_sbatch_command",
+    "build_shell_in_allocation_command",
     "build_dev_pythonpath",
     "build_host_mount_binds",
     # freeze / status / verify
