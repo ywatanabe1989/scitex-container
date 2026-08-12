@@ -58,13 +58,38 @@ def _ensure_subprocess_coverage_shim() -> None:
     """Drop an idempotent ``.pth`` file in site-packages that auto-starts
     coverage in every child Python interpreter via
     ``coverage.process_startup()``.
+
+    The shim is written in a very specific shape, and both halves matter.
+
+    **Guard the import.** A ``.pth`` executes at interpreter startup, inside
+    ``site``, for EVERY Python process on the machine — long before any
+    application code exists to catch anything. The previous shim ran a bare
+    ``import coverage`` at line 1, so on any interpreter without coverage
+    installed, ``site`` printed a traceback to stderr and carried on. That is
+    every command in every container on this fleet: one ``curl | python3``
+    emitted four tracebacks before two lines of real output.
+
+    The cost is not the noise. It is that people learn to skim past stderr,
+    which is exactly where the next real error will appear.
+
+    **Check the env var FIRST.** A non-test process now imports *nothing* —
+    it evaluates one ``os.environ.get`` and stops. Ordering the check before
+    the import is not merely a tidier way to spell the guard: it means the
+    overwhelming majority of processes stop paying for a coverage import they
+    were never going to use. A ``.pth`` should be the cheapest and quietest
+    thing in the process.
     """
     purelib = Path(sysconfig.get_paths()["purelib"])
     pth = purelib / "_scitex_container_subprocess_coverage.pth"
     shim = (
-        "import os, coverage\n"
+        "import os\n"
         "if os.environ.get('COVERAGE_PROCESS_START'):\n"
-        "    coverage.process_startup()\n"
+        "    try:\n"
+        "        import coverage\n"
+        "    except ImportError:\n"
+        "        pass\n"
+        "    else:\n"
+        "        coverage.process_startup()\n"
     )
     try:
         if not pth.exists() or pth.read_text() != shim:
