@@ -29,20 +29,29 @@ def _repro():
 
 @pytest.fixture
 def recording_build():
-    """Swap ``_reproducible._build`` for a real recording callable.
+    """Swap ``_reproducible``'s two apptainer-touching seams for real callables.
 
-    Save/restore of a module-level attribute — the same pattern the
-    package already uses for its own build seam — not a mocking library:
-    the substitute is an ordinary function that records the kwargs it was
-    called with and materializes the SIF on disk, so everything around it
-    (relocate, log preservation, publish, prune) runs for real against
-    real files. Yields the list of recorded call kwargs.
+    Save/restore of module-level attributes — the same pattern the package
+    already uses for its own build seam — not a mocking library. Both
+    substitutes are ordinary functions that record what they were called
+    with and write real files, so everything around them (relocate, log
+    preservation, publish, prune, locked-def generation) runs for real
+    against the real filesystem. Yields the list of recorded ``_build``
+    kwargs.
 
-    Substituting the build itself is the point: what these tests assert is
+    Substituting the build is the point: what these tests assert is
     precisely WHICH ARGUMENTS reach apptainer, and a real multi-minute
     container build cannot answer that question.
+
+    ``capture_lock`` has to go too, and NOT for convenience. It resolves
+    ``detect_container_cmd()``, which raises ``FileNotFoundError`` when
+    neither apptainer nor singularity is on PATH — so leaving it real makes
+    these tests silently environment-dependent: green on a host with
+    apptainer installed, red on CI, which is exactly what happened. A test
+    about argument routing must not depend on whether the machine can run
+    containers at all.
     """
-    from scitex_container.apptainer import _reproducible as r
+    from scitex_container.apptainer import _lockgen, _reproducible as r
 
     calls: list[dict] = []
 
@@ -56,12 +65,20 @@ def recording_build():
         sif.write_bytes(b"fake-sif")
         return sif
 
-    saved = r._build
+    def fake_capture_lock(sif_path, lock_path):
+        lock = _lockgen.Lock()
+        _lockgen.write_lock(lock, lock_path)
+        return lock
+
+    saved_build = r._build
+    saved_capture = r.capture_lock
     r._build = recording
+    r.capture_lock = fake_capture_lock
     try:
         yield calls
     finally:
-        r._build = saved
+        r._build = saved_build
+        r.capture_lock = saved_capture
 
 
 class TestRoughBuildForwardsCwd:
