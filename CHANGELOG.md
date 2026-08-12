@@ -7,6 +7,45 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1]
+
+### Fixed
+
+- **The subprocess-coverage `.pth` shim printed a traceback from every Python
+  process on the machine.** It opened with an unconditional `import coverage`,
+  and a `.pth` runs at interpreter startup inside `site` — before any
+  application code exists to catch anything. On an interpreter without
+  coverage installed, `site` printed a `ModuleNotFoundError` traceback to
+  stderr and carried on. Every command in every container carried it; one
+  `curl | python3` emitted four tracebacks before two lines of real output.
+
+  The cost was never the noise. It is that people learn to skim past stderr,
+  which is precisely where the next real error appears.
+
+  The shim now checks `COVERAGE_PROCESS_START` **first** and only then imports
+  coverage, guarded:
+
+  ```python
+  import os
+  if os.environ.get('COVERAGE_PROCESS_START'):
+      try:
+          import coverage
+      except ImportError:
+          pass
+      else:
+          coverage.process_startup()
+  ```
+
+  Ordering the env check before the import is not just a tidier spelling of
+  the guard: a non-test process now imports *nothing*, rather than paying for
+  a coverage import it was never going to use. A `.pth` should be the cheapest
+  and quietest thing in the process.
+
+  Fixed in the GENERATOR (`tests/conftest.py::_ensure_subprocess_coverage_shim`),
+  which rewrites the artifact whenever its content differs — so the file is
+  corrected on the next test run rather than needing a manual edit. Existing
+  installs keep the old shim until then.
+
 ## [0.4.0]
 
 ### Added
