@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # Timestamp: "2026-05-24"
 # File: tests/scitex_container/apptainer/test__reproducible.py
-"""Tests for scitex_container.apptainer._reproducible (use-time gate).
+"""Tests for scitex_container.apptainer._reproducible (round-trip side).
 
-No mocks. The use-time verify gate (check_verified) is exercised against
-real marker files in tmp_path. The full round-trip (build_reproducible /
-verify_roundtrip) requires apptainer + a real build and lives in the
-gated integration test ``test__reproducible_roundtrip.py``.
+No mocks. The build-context (``cwd``) forwarding is exercised against a
+real recording callable substituted for ``_build``; the log-relocation
+helper against real files in tmp_path. The full round-trip
+(``build_reproducible`` / ``verify_roundtrip`` end to end) requires
+apptainer + a real build and lives in the gated integration test
+``test__reproducible_roundtrip.py``.
+
+The use-time gate (``check_verified``) moved to ``_verify_gate`` and its
+tests to ``test__verify_gate.py``.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -24,173 +28,168 @@ def _repro():
 
 
 @pytest.fixture
-def scitex_dir(tmp_path):
-    """Point SCITEX_DIR at a tmp dir so config resolution is isolated."""
-    user_root = tmp_path / "scitex-home"
-    user_root.mkdir()
-    saved = os.environ.get("SCITEX_DIR")
-    os.environ["SCITEX_DIR"] = str(user_root)
+def recording_build():
+    """Swap ``_reproducible``'s two apptainer-touching seams for real callables.
+
+    Save/restore of module-level attributes — the same pattern the package
+    already uses for its own build seam — not a mocking library. Both
+    substitutes are ordinary functions that record what they were called
+    with and write real files, so everything around them (relocate, log
+    preservation, publish, prune, locked-def generation) runs for real
+    against the real filesystem. Yields the list of recorded ``_build``
+    kwargs.
+
+    Substituting the build is the point: what these tests assert is
+    precisely WHICH ARGUMENTS reach apptainer, and a real multi-minute
+    container build cannot answer that question.
+
+    ``capture_lock`` has to go too, and NOT for convenience. It resolves
+    ``detect_container_cmd()``, which raises ``FileNotFoundError`` when
+    neither apptainer nor singularity is on PATH — so leaving it real makes
+    these tests silently environment-dependent: green on a host with
+    apptainer installed, red on CI, which is exactly what happened. A test
+    about argument routing must not depend on whether the machine can run
+    containers at all.
+    """
+    from scitex_container.apptainer import _lockgen, _reproducible as r
+
+    calls: list[dict] = []
+
+    def recording(**kwargs):
+        calls.append(dict(kwargs))
+        out_dir = Path(kwargs["output_dir"])
+        name = kwargs["image_name"]
+        image_dir = out_dir / name
+        image_dir.mkdir(parents=True, exist_ok=True)
+        sif = image_dir / f"{name}.sif"
+        sif.write_bytes(b"fake-sif")
+        return sif
+
+    def fake_capture_lock(sif_path, lock_path):
+        lock = _lockgen.Lock()
+        _lockgen.write_lock(lock, lock_path)
+        return lock
+
+    saved_build = r._build
+    saved_capture = r.capture_lock
+    r._build = recording
+    r.capture_lock = fake_capture_lock
     try:
-        yield user_root
+        yield calls
     finally:
-        if saved is None:
-            os.environ.pop("SCITEX_DIR", None)
-        else:
-            os.environ["SCITEX_DIR"] = saved
+        r._build = saved_build
+        r.capture_lock = saved_capture
 
 
-@pytest.fixture
-def no_project_scope(tmp_path):
-    workdir = tmp_path / "no-scope"
-    workdir.mkdir()
-    saved = Path.cwd()
-    os.chdir(workdir)
-    try:
-        yield workdir
-    finally:
-        os.chdir(saved)
+class TestRoughBuildForwardsCwd:
+    """The rough build must resolve the recipe against the caller's context.
 
+    A consumer whose ``.def`` reads ``%files`` from a STAGED directory can
+    only use the round-trip if that directory reaches apptainer as the
+    build cwd. Dropping it silently builds against the wrong tree (or
+    FATALs), which is why the round-trip had no callers.
+    """
 
-def _sif_with_marker(tmp_path: Path, marker_ext: str | None, body: str = "") -> Path:
-    """Create a fake <name>.sif and an optional sibling marker."""
-    sif = tmp_path / "img.sif"
-    sif.write_bytes(b"fake")
-    if marker_ext is not None:
-        (tmp_path / f"img{marker_ext}").write_text(body or "marker\n")
-    return sif
-
-
-class TestCheckVerifiedVerified:
-    """A .verified image passes silently."""
-
-    def test_verified_marker_yields_verified_state(self, tmp_path):
+    def test_forwards_cwd_to_build(self, tmp_path, recording_build):
         # Arrange
         r = _repro()
-        sif = _sif_with_marker(tmp_path, ".verified")
+        staging = tmp_path / "build-context"
+        staging.mkdir()
         # Act
-        status = r.check_verified(sif, require_verified=False)
+        r._rough_build(
+            layer="base",
+            ts="2026-0812-100000",
+            root=tmp_path,
+            canonical_sif=tmp_path / "base" / "base-2026-0812-100000.sif",
+            build_log=tmp_path / "base" / "base-2026-0812-100000.build.log",
+            def_path=None,
+            def_name="base",
+            force=False,
+            cwd=staging,
+        )
         # Assert
-        assert status.state == "verified"
+        assert recording_build[0]["cwd"] == staging
 
-    def test_verified_status_is_verified_true(self, tmp_path):
+    def test_defaults_cwd_to_none_when_unset(self, tmp_path, recording_build):
         # Arrange
         r = _repro()
-        sif = _sif_with_marker(tmp_path, ".verified")
         # Act
-        status = r.check_verified(sif, require_verified=False)
+        r._rough_build(
+            layer="base",
+            ts="2026-0812-100000",
+            root=tmp_path,
+            canonical_sif=tmp_path / "base" / "base-2026-0812-100000.sif",
+            build_log=tmp_path / "base" / "base-2026-0812-100000.build.log",
+            def_path=None,
+            def_name="base",
+            force=False,
+        )
         # Assert
-        assert status.is_verified is True
+        assert recording_build[0]["cwd"] is None
 
-    def test_verified_passes_even_under_require_verified(self, tmp_path):
+
+class TestVerifyRoundtripForwardsCwd:
+    """The replay must use the SAME build context as the rough build.
+
+    The locked def is the rough def plus a pin stanza, so it carries the
+    identical relative ``%files`` / ``From:`` references. Replaying it from
+    a different cwd does not compare like with like — it fails to build.
+    """
+
+    def test_forwards_cwd_to_verify_rebuild(self, tmp_path, recording_build):
         # Arrange
         r = _repro()
-        sif = _sif_with_marker(tmp_path, ".verified")
+        from scitex_container.apptainer import _store as s
+
+        staging = tmp_path / "build-context"
+        staging.mkdir()
+        ap = s.artifact_paths(tmp_path, "base", "2026-0812-100000")
+        ap.layer_dir.mkdir(parents=True)
+        ap.sif.write_bytes(b"fake-sif")
+        ap.locked_def.write_text("Bootstrap: docker\nFrom: alpine:3.19\n")
+        ap.lock.write_text("# scitex-container lock\n[pip]\n[dpkg]\n[node]\n")
         # Act
-        status = r.check_verified(sif, require_verified=True)
+        r.verify_roundtrip("base", tmp_path, "2026-0812-100000", cwd=staging)
         # Assert
-        assert status.state == "verified"
+        assert recording_build[0]["cwd"] == staging
 
 
-class TestCheckVerifiedUnverified:
-    """An .unverified image warns by default, errors in strict mode."""
+class TestBuildReproduciblePublishesBothSymlinks:
+    """A published round-trip build must be the one that actually boots.
 
-    def test_unverified_marker_yields_unverified_state(self, tmp_path):
-        # Arrange
-        r = _repro()
-        sif = _sif_with_marker(tmp_path, ".unverified", body="numpy drifted\n")
-        # Act
-        status = r.check_verified(sif, require_verified=False)
-        # Assert
-        assert status.state == "unverified"
+    ``point_latest`` writes only the TOP link; runtimes boot off the INNER
+    ``<layer>/<layer>.sif``. Publishing one without the other leaves the
+    store advertising a build nobody runs.
+    """
 
-    def test_unverified_detail_carries_drift_reason(self, tmp_path):
-        # Arrange
-        r = _repro()
-        sif = _sif_with_marker(tmp_path, ".unverified", body="numpy drifted\n")
-        # Act
-        status = r.check_verified(sif, require_verified=False)
-        # Assert
-        assert "numpy" in status.detail
-
-    def test_unverified_warns_but_returns_in_default_mode(self, tmp_path):
-        # Arrange
-        r = _repro()
-        sif = _sif_with_marker(tmp_path, ".unverified", body="drift\n")
-        # Act
-        status = r.check_verified(sif, require_verified=False)
-        # Assert
-        assert status.is_verified is False
-
-    def test_unverified_raises_under_require_verified(self, tmp_path):
-        # Arrange
-        r = _repro()
-        sif = _sif_with_marker(tmp_path, ".unverified", body="drift\n")
-        ctx = pytest.raises(r.VerifyError)
-        # Act
-        # Assert
-        with ctx:
-            r.check_verified(sif, require_verified=True)
-
-
-class TestCheckVerifiedUnknown:
-    """An image with no marker is treated as unverified."""
-
-    def test_no_marker_yields_unknown_state(self, tmp_path):
-        # Arrange
-        r = _repro()
-        sif = _sif_with_marker(tmp_path, None)
-        # Act
-        status = r.check_verified(sif, require_verified=False)
-        # Assert
-        assert status.state == "unknown"
-
-    def test_no_marker_raises_under_require_verified(self, tmp_path):
-        # Arrange
-        r = _repro()
-        sif = _sif_with_marker(tmp_path, None)
-        ctx = pytest.raises(r.VerifyError)
-        # Act
-        # Assert
-        with ctx:
-            r.check_verified(sif, require_verified=True)
-
-
-class TestCheckVerifiedSymlink:
-    """A latest-symlink is resolved before the marker lookup."""
-
-    def test_symlink_resolves_to_verified_target(self, tmp_path):
-        # Arrange
-        r = _repro()
-        layer_dir = tmp_path / "base"
-        layer_dir.mkdir()
-        target = layer_dir / "base-2026-0524-100000.sif"
-        target.write_bytes(b"fake")
-        (layer_dir / "base-2026-0524-100000.verified").write_text("ok\n")
-        link = tmp_path / "base.sif"
-        link.symlink_to(Path("base") / "base-2026-0524-100000.sif")
-        # Act
-        status = r.check_verified(link, require_verified=False)
-        # Assert
-        assert status.state == "verified"
-
-
-class TestCheckVerifiedConfigResolution:
-    """require_verified is read from config when not passed explicitly."""
-
-    def test_require_verified_from_root_config_raises(
-        self, tmp_path, scitex_dir, no_project_scope
+    def test_inner_boot_symlink_points_at_the_new_build(
+        self, tmp_path, recording_build
     ):
         # Arrange
         r = _repro()
-        root = tmp_path / "root"
-        root.mkdir()
-        (root / "config.yaml").write_text("images:\n  require_verified: true\n")
-        sif = _sif_with_marker(tmp_path, ".unverified", body="drift\n")
-        ctx = pytest.raises(r.VerifyError)
+        def_path = tmp_path / "base.def"
+        def_path.write_text("Bootstrap: docker\nFrom: alpine:3.19\n")
         # Act
+        res = r.build_reproducible(
+            layer="base", root=tmp_path, def_path=def_path, verify=False
+        )
         # Assert
-        with ctx:
-            r.check_verified(sif, root=root)
+        inner = tmp_path / "base" / "base.sif"
+        assert inner.resolve() == res.sif.resolve()
+
+    def test_top_level_symlink_points_at_the_new_build(
+        self, tmp_path, recording_build
+    ):
+        # Arrange
+        r = _repro()
+        def_path = tmp_path / "base.def"
+        def_path.write_text("Bootstrap: docker\nFrom: alpine:3.19\n")
+        # Act
+        res = r.build_reproducible(
+            layer="base", root=tmp_path, def_path=def_path, verify=False
+        )
+        # Assert
+        assert (tmp_path / "base.sif").resolve() == res.sif.resolve()
 
 
 class TestPreserveBuildLog:

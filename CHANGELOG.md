@@ -7,6 +7,64 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Added
+
+- **`build_reproducible()` / `verify_roundtrip()` accept `cwd`** — the build
+  context apptainer resolves a recipe's relative `%files` sources and
+  `From: ./<other>.sif` layer references against. Forwarded to *both* the
+  rough build and the verify rebuild, so the replay resolves the same staged
+  inputs the rough build did.
+
+  Without it the round-trip was **unreachable** for any consumer whose recipe
+  reads from a staged build context rather than from the containers dir: the
+  relative `%files` do not exist relative to `root`, and apptainer FATALs
+  before running a line of `%post`. That was the entire reason this
+  round-trip shipped with no callers — `scitex-agent-container` stages its
+  own source tree beside the `.def` so the SIF pins the source that shipped
+  the recipe, and could not call in.
+
+- **`_store.publish()`** — publishes a build through *both* stable symlinks
+  (the inner `<layer>/<layer>.sif` boot path and the top-level
+  `<layer>.sif`). `_build._publish_atomic` now delegates to it, so the plain
+  build and the reproducible round-trip publish identically.
+
+### Fixed
+
+- **`build_reproducible` left the boot symlink stale.** It published via
+  `point_latest`, which writes only the TOP-level link, so a consumer that
+  boots off the inner `<layer>/<layer>.sif` kept resolving the PREVIOUS
+  build while the store advertised the new one — a reproducible build nobody
+  ran. It now publishes through `_store.publish`.
+
+- **The recipe snapshot could describe a build that never finished.**
+  `_build` copied the `.def` beside the artifact at build START while writing
+  `.def-hash` only on SUCCESS, so an interrupted or failing build left a
+  snapshot permanently disagreeing with the hash next to it. (Measured on a
+  live host 2026-08-12: the `.def` hashed `b7564978…`, `.def-hash` said
+  `47c7bbfc…`, and the live SIF was neither.) Both are now written together,
+  on success; a failed build leaves the previous build's pair intact.
+
+- **Auto-freeze is artifact-scoped.** After a successful build the version
+  set is captured to `<image_dir>/<name>-<ts>.lock` via `capture_lock`,
+  replacing the three fixed-name files (`requirements-lock.txt` /
+  `dpkg-lock.txt` / `node-lock.txt`) written at the containers ROOT. That
+  layout had three faults: a second layer's build overwrote the first
+  layer's record (nothing tied a lock to the SIF it described); `freeze`
+  execs without `--cleanenv --no-home`, so apptainer auto-mounted `$HOME`
+  and `pip freeze` captured the HOST environment; and root-level fixed names
+  outlived every retention sweep. `<name>-<ts>.lock` is host-isolated and is
+  exactly the path `_store._remove_build` already prunes. The explicit
+  `container freeze` verb and `_freeze.freeze` itself are unchanged.
+
+### Changed
+
+- The use-time gate (`check_verified`, `VerifyStatus`, `VerifyError`) moved
+  from `_reproducible` into a new `_verify_gate` module — the read side, run
+  on every image use, split from the write side that runs once per build.
+  Re-exported from `_reproducible`, so every existing import still resolves.
+
 ## [0.3.0]
 
 ### Added

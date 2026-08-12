@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 def _store():
     from scitex_container.apptainer import _store as s
@@ -344,6 +346,89 @@ class TestPrune:
         pruned = s.prune(tmp_path, "base", retain=10)
         # Assert
         assert pruned == []
+
+
+class TestPublishBothSymlinks:
+    """``publish`` swaps BOTH stable links — the boot path and the top link.
+
+    ``point_latest`` writes only the top-level link. Any caller that means
+    "make this build live" must write the inner boot link too, or runtimes
+    keep resolving the previous build while the store advertises the new
+    one.
+    """
+
+    def _mk_build(self, root, layer, ts):
+        layer_dir = root / layer
+        layer_dir.mkdir(parents=True, exist_ok=True)
+        sif = layer_dir / f"{layer}-{ts}.sif"
+        sif.write_bytes(b"fake-" + ts.encode())
+        return sif
+
+    def test_creates_inner_boot_symlink(self, tmp_path):
+        # Arrange
+        s = _store()
+        self._mk_build(tmp_path, "base", "2026-0812-100000")
+        # Act
+        s.publish(tmp_path, "base", "2026-0812-100000")
+        # Assert
+        assert (tmp_path / "base" / "base.sif").is_symlink()
+
+    def test_inner_boot_symlink_resolves_to_the_build(self, tmp_path):
+        # Arrange
+        s = _store()
+        sif = self._mk_build(tmp_path, "base", "2026-0812-100000")
+        # Act
+        s.publish(tmp_path, "base", "2026-0812-100000")
+        # Assert
+        assert (tmp_path / "base" / "base.sif").resolve() == sif.resolve()
+
+    def test_creates_top_level_symlink(self, tmp_path):
+        # Arrange
+        s = _store()
+        sif = self._mk_build(tmp_path, "base", "2026-0812-100000")
+        # Act
+        s.publish(tmp_path, "base", "2026-0812-100000")
+        # Assert
+        assert (tmp_path / "base.sif").resolve() == sif.resolve()
+
+    def test_both_targets_are_relative(self, tmp_path):
+        # Arrange
+        s = _store()
+        self._mk_build(tmp_path, "base", "2026-0812-100000")
+        # Act
+        s.publish(tmp_path, "base", "2026-0812-100000")
+        # Assert
+        assert not (tmp_path / "base" / "base.sif").readlink().is_absolute()
+
+    def test_republish_repoints_inner_link_to_newer_build(self, tmp_path):
+        # Arrange
+        s = _store()
+        self._mk_build(tmp_path, "base", "2026-0812-100000")
+        newer = self._mk_build(tmp_path, "base", "2026-0812-110000")
+        s.publish(tmp_path, "base", "2026-0812-100000")
+        # Act
+        s.publish(tmp_path, "base", "2026-0812-110000")
+        # Assert
+        assert (tmp_path / "base" / "base.sif").resolve() == newer.resolve()
+
+    def test_returns_the_real_sif(self, tmp_path):
+        # Arrange
+        s = _store()
+        sif = self._mk_build(tmp_path, "base", "2026-0812-100000")
+        # Act
+        published = s.publish(tmp_path, "base", "2026-0812-100000")
+        # Assert
+        assert published == sif
+
+    def test_missing_artifact_raises(self, tmp_path):
+        # Arrange
+        s = _store()
+        (tmp_path / "base").mkdir()
+        ctx = pytest.raises(FileNotFoundError)
+        # Act
+        # Assert
+        with ctx:
+            s.publish(tmp_path, "base", "2026-0812-100000")
 
 
 # EOF

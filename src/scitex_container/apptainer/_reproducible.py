@@ -55,8 +55,16 @@ from ._lockgen import (
 logger = logging.getLogger(__name__)
 
 
-class VerifyError(RuntimeError):
-    """Raised by the use-time gate when an image is unverified under strict mode."""
+# The use-time gate (``check_verified`` + its types) lives in
+# ``_verify_gate`` — the READ side, run on every image use, versus this
+# module's WRITE side, run once per build. Re-exported here so the
+# long-standing ``from ._reproducible import check_verified`` keeps
+# resolving.
+from ._verify_gate import (  # noqa: E402,F401  (deliberate re-export)
+    VerifyError,
+    VerifyStatus,
+    check_verified,
+)
 
 
 @dataclass
@@ -88,6 +96,7 @@ def build_reproducible(
     keep: bool = False,
     config: ImageConfig | None = None,
     force: bool = False,
+    cwd: str | Path | None = None,
 ) -> RoundTripResult:
     """Run the reproducible round-trip and manage the artifact store.
 
@@ -120,6 +129,22 @@ def build_reproducible(
         Resolved config (retain). Loaded from ``root`` when None.
     force : bool
         Force the rough rebuild even when the recipe hash is unchanged.
+    cwd : str or Path, optional
+        Build context — the directory apptainer resolves the ``.def``'s
+        relative ``%files`` sources and ``From: ./<other>.sif`` layer
+        references against. Forwarded verbatim to ``build`` for BOTH the
+        rough build and the verify rebuild, so the replay resolves the
+        same staged inputs the rough build did. Defaults to ``root``
+        (``build``'s own back-compat default).
+
+        Without it the round-trip is UNREACHABLE for any consumer whose
+        recipe reads from a STAGED build context rather than from the
+        containers dir: the recipe's relative ``%files`` does not exist
+        relative to ``root``, so apptainer FATALs before running a line of
+        ``%post``. scitex-agent-container is exactly that consumer — it
+        stages its own source tree beside the ``.def`` so the SIF pins the
+        source that shipped the recipe — which is why this whole
+        round-trip sat here with no caller.
 
     Returns
     -------
@@ -148,6 +173,7 @@ def build_reproducible(
         def_path=def_path,
         def_name=def_name,
         force=force,
+        cwd=cwd,
     )
 
     # Snapshot the rough def alongside (the recipe that produced this build).
@@ -161,8 +187,15 @@ def build_reproducible(
     # --- Step 3: generate locked def ----------------------------------
     generate_locked_def(resolved_rough_def, rough_lock, ap.locked_def)
 
-    # Point the latest symlink at the freshly-built rough artifact.
-    _store.point_latest(root, layer, ts)
+    # Publish the freshly-built rough artifact through BOTH stable
+    # symlinks. This used to call ``point_latest``, which writes only the
+    # TOP-level ``<root>/<layer>.sif`` — leaving the INNER
+    # ``<root>/<layer>/<layer>.sif`` boot path still resolving to the
+    # PREVIOUS build. A consumer that boots off the inner path (as
+    # scitex-agent-container's runtime does) would then run the OLD image
+    # while the store claimed the new one was live: a reproducible build
+    # nobody ever ran.
+    _store.publish(root, layer, ts)
 
     if keep:
         _store.protect(root, layer, ts)
@@ -184,7 +217,7 @@ def build_reproducible(
         return result
 
     # --- Steps 4-5: verify rebuild + compare --------------------------
-    diff = verify_roundtrip(layer, root, ts)
+    diff = verify_roundtrip(layer, root, ts, cwd=cwd)
     result.verified = diff.identical
     result.diff = diff
     return result
@@ -219,6 +252,7 @@ def _rough_build(
     def_path: str | Path | None,
     def_name: str | None,
     force: bool,
+    cwd: str | Path | None = None,
 ) -> Path:
     """Run the loose (rough) build, relocate into the timestamped slot.
 
@@ -252,6 +286,7 @@ def _rough_build(
         sandbox=False,
         def_path=def_path,
         image_name=scratch_name,
+        cwd=cwd,
     )
     scratch_sif = Path(scratch_sif)
 
@@ -318,6 +353,8 @@ def verify_roundtrip(
     layer: str,
     root: str | Path,
     ts: str,
+    *,
+    cwd: str | Path | None = None,
 ) -> LockDiff:
     """Rebuild from the locked def, compare version sets, mark the build.
 
@@ -339,6 +376,11 @@ def verify_roundtrip(
         The ``containers/`` directory.
     ts : str
         Timestamp of the rough build to verify.
+    cwd : str or Path, optional
+        Build context for the verify rebuild. MUST be the same context
+        the rough build used — the locked def is the rough def plus a pin
+        stanza, so it carries the identical relative ``%files`` /
+        ``From:`` references and resolves them the same way or not at all.
 
     Returns
     -------
@@ -368,6 +410,7 @@ def verify_roundtrip(
             sandbox=False,
             def_path=ap.locked_def,
             image_name=verify_name,
+            cwd=cwd,
         )
         rebuild_lock = capture_lock(verify_sif, verify_lock_path)
         diff = compare_locks(rough_lock, rebuild_lock)
@@ -411,98 +454,6 @@ def _cleanup_verify(root: Path, verify_name: str, verify_scratch: Path) -> None:
         shutil.rmtree(verify_scratch, ignore_errors=True)
     # Discard _build's host-bleed auto-freeze locks (see _rough_build).
     _discard_stray_locks(root)
-
-
-# ---------------------------------------------------------------------------
-# Use-time verify gate (scitex-container owns; consumers call it)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class VerifyStatus:
-    """Result of a use-time verify check."""
-
-    state: str  # "verified" | "unverified" | "unknown"
-    sif: Path
-    detail: str = ""
-
-    @property
-    def is_verified(self) -> bool:
-        return self.state == "verified"
-
-
-@supports_return_as
-def check_verified(
-    sif_path: str | Path,
-    *,
-    require_verified: bool | None = None,
-    root: str | Path | None = None,
-    config: ImageConfig | None = None,
-) -> VerifyStatus:
-    """Check a built image's reproducibility marker — NOISY on every use.
-
-    The use-time gate consumers call on every image use. Looks beside the
-    SIF for the ``.verified`` / ``.unverified`` marker (resolving a
-    ``latest`` symlink first):
-
-    - ``.verified`` present → ``state="verified"`` (silent OK).
-    - ``.unverified`` present → WARN by default ("reproducibility
-      unverified: <drift>"); under ``require_verified`` → raise
-      ``VerifyError``.
-    - no marker → ``state="unknown"`` → WARN it's unverified; under
-      ``require_verified`` → raise.
-
-    Parameters
-    ----------
-    sif_path : str or Path
-        Path to the image being used (may be the ``latest`` symlink).
-    require_verified : bool, optional
-        Strict mode. When None, resolved from ``config`` /
-        ``load_config(root)`` (``images.require_verified``).
-    root : str or Path, optional
-        Output root for config resolution (when ``require_verified`` and
-        ``config`` are both None).
-    config : ImageConfig, optional
-        Pre-resolved config.
-
-    Returns
-    -------
-    VerifyStatus
-        The marker state + detail.
-
-    Raises
-    ------
-    VerifyError
-        When the image is not verified and strict mode is on.
-    """
-    sif_path = Path(sif_path)
-    resolved = sif_path.resolve() if sif_path.is_symlink() else sif_path
-
-    if require_verified is None:
-        cfg = config or load_config(root)
-        require_verified = cfg.require_verified
-
-    verified_marker = resolved.with_suffix(".verified")
-    unverified_marker = resolved.with_suffix(".unverified")
-
-    if verified_marker.exists():
-        return VerifyStatus(
-            state="verified", sif=resolved, detail="round-trip verified"
-        )
-
-    if unverified_marker.exists():
-        detail = unverified_marker.read_text().strip().replace("\n", "; ")
-        msg = f"reproducibility unverified: {detail}"
-        if require_verified:
-            raise VerifyError(f"{resolved.name}: {msg}")
-        logger.warning("%s: %s", resolved.name, msg)
-        return VerifyStatus(state="unverified", sif=resolved, detail=detail)
-
-    msg = "reproducibility unverified: no round-trip marker found"
-    if require_verified:
-        raise VerifyError(f"{resolved.name}: {msg}")
-    logger.warning("%s: %s", resolved.name, msg)
-    return VerifyStatus(state="unknown", sif=resolved, detail="no marker")
 
 
 # EOF

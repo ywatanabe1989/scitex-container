@@ -215,10 +215,6 @@ def _build_sif(
             logger.info("Output is up-to-date (hash: %s...)", current_hash[:12])
             return resolved_sif
 
-    # Snapshot the recipe alongside the artifact so the build is
-    # self-describing even if the source .def is later edited.
-    shutil.copy2(resolved_def, image_dir / f"{name}.def")
-
     ts = _store.timestamp()
     log_path = image_dir / f"{name}.build-{ts}.log"
     output_path = image_dir / f"{name}-{ts}.sif"
@@ -265,6 +261,17 @@ def _build_sif(
             f"Build failed with exit code {result.returncode}; see {log_path}"
         )
 
+    # Snapshot the recipe alongside the artifact ON SUCCESS, in lockstep
+    # with the hash that describes it. Both used to be written at different
+    # moments — the ``.def`` copy before the build, the ``.def-hash`` after
+    # it — so an interrupted or failed build left a recipe snapshot
+    # describing a build that never finished, permanently disagreeing with
+    # the hash beside it (measured on a live host 2026-08-12: the ``.def``
+    # hashed b7564978… while ``.def-hash`` said 47c7bbfc…, and the live SIF
+    # was neither). Writing both here makes the pair atomic in practice:
+    # a failed build leaves the PREVIOUS build's snapshot + hash intact,
+    # which is the only self-consistent thing to leave behind.
+    shutil.copy2(resolved_def, image_dir / f"{name}.def")
     hash_file.write_text(current_hash + "\n")
 
     # Atomically publish the new build through both stable symlinks, before
@@ -281,12 +288,38 @@ def _build_sif(
 
     logger.info("Build complete: %s (published %s.sif)", output_path, name)
 
-    # Auto-freeze lock files after a successful build.
+    # Auto-freeze: capture this build's version set into an ARTIFACT-SCOPED
+    # lock, ``<image_dir>/<name>-<ts>.lock``.
+    #
+    # This used to call ``_freeze.freeze(output_path, output_dir=out_dir)``,
+    # which wrote three FIXED names (``requirements-lock.txt`` /
+    # ``dpkg-lock.txt`` / ``node-lock.txt``) at the containers ROOT. Three
+    # problems, all fixed by scoping the lock to the artifact:
+    #
+    #   1. Cross-layer clobber — a ``sac-scitex`` build overwrote the
+    #      ``sac-base`` record, so the next base build destroyed the
+    #      current SIF's only fingerprint. Nothing tied a lock to the SIF
+    #      it described.
+    #   2. Host bleed — ``freeze`` execs without ``--cleanenv --no-home``,
+    #      so apptainer auto-mounts ``$HOME`` and ``pip freeze`` captured
+    #      the HOST environment. ``capture_lock`` isolates (see
+    #      ``_lockgen._exec_capture``), so what lands is the CONTAINER's
+    #      version set — the only one that means anything here.
+    #   3. Unprunable — root-level fixed names outlived every retention
+    #      sweep. ``<name>-<ts>.lock`` is exactly the path
+    #      ``_store._remove_build`` already deletes, so locks now age out
+    #      with the SIF they describe.
+    #
+    # The format is the same combined ``.lock`` the reproducible round-trip
+    # writes, so a plain build's lock and a round-trip lock are directly
+    # comparable. ``_freeze.freeze`` itself is unchanged and still backs the
+    # explicit ``container freeze`` verb.
     try:
-        from ._freeze import freeze
+        from ._lockgen import capture_lock
 
-        freeze(output_path, output_dir=out_dir)
-        logger.info("Auto-freeze: lock files saved alongside SIF")
+        lock_path = image_dir / f"{name}-{ts}.lock"
+        capture_lock(output_path, lock_path)
+        logger.info("Auto-freeze: lock saved at %s", lock_path)
     except Exception as exc:
         logger.warning("Auto-freeze failed (non-fatal): %s", exc)
 
@@ -313,8 +346,6 @@ def _build_sandbox(
         if hash_file.read_text().strip() == current_hash:
             logger.info("Output is up-to-date (hash: %s...)", current_hash[:12])
             return output_path
-
-    shutil.copy2(resolved_def, image_dir / f"{name}.def")
 
     ts = _store.timestamp()
     log_path = image_dir / f"{name}.build-{ts}.log"
@@ -352,6 +383,10 @@ def _build_sandbox(
             f"Build failed with exit code {result.returncode}; see {log_path}"
         )
 
+    # Recipe snapshot + hash together, ON SUCCESS — same reasoning as the
+    # SIF path above: a failed sandbox build must not leave a snapshot
+    # describing a build that never finished.
+    shutil.copy2(resolved_def, image_dir / f"{name}.def")
     hash_file.write_text(current_hash + "\n")
     logger.info("Build complete: %s", output_path)
     return output_path
@@ -367,11 +402,14 @@ def _publish_atomic(out_dir: Path, image_dir: Path, name: str, ts: str) -> Path:
     - INNER  ``<image_dir>/<name>.sif -> <name>-<ts>.sif``  (boot path)
     - TOP    ``<out_dir>/<name>.sif   -> <name>/<name>-<ts>.sif``  (From: ./x.sif)
 
+    Delegates to ``_store.publish`` — the shared primitive the reproducible
+    round-trip publishes through too, so both build paths land the same
+    two links. ``image_dir`` is ``out_dir/name`` by construction and stays
+    in the signature for the existing callers/tests.
+
     Returns the resolved real SIF (``<image_dir>/<name>-<ts>.sif``).
     """
-    _store.atomic_symlink(image_dir / f"{name}.sif", Path(f"{name}-{ts}.sif"))
-    _store.atomic_symlink(out_dir / f"{name}.sif", Path(name) / f"{name}-{ts}.sif")
-    return image_dir / f"{name}-{ts}.sif"
+    return _store.publish(out_dir, name, ts)
 
 
 def _hash_file(path: Path) -> str:

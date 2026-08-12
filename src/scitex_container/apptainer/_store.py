@@ -235,6 +235,42 @@ def point_latest(root: str | Path, layer: str, ts: str) -> Path:
 
 
 @supports_return_as
+def publish(root: str | Path, layer: str, ts: str) -> Path:
+    """Publish a build through BOTH stable symlinks, atomically.
+
+    The single SSOT for "make this ``(layer, ts)`` build the live one".
+    There are two stable paths consumers depend on, and a publish that
+    writes only one of them leaves the store half-swapped:
+
+    - INNER ``<root>/<layer>/<layer>.sif -> <layer>-<ts>.sif`` — the BOOT
+      path. Runtimes and downstream layers resolve images through here.
+    - TOP ``<root>/<layer>.sif -> <layer>/<layer>-<ts>.sif`` — what a
+      layered recipe's ``From: ./<layer>.sif`` resolves against.
+
+    ``point_latest`` writes only the TOP link and is kept for callers that
+    genuinely mean just that; every full publish should come through here.
+    Writing only TOP is what made the reproducible round-trip unusable from
+    a consumer whose runtime boots off the INNER path: the round-trip built
+    a fresh SIF and repointed TOP, while INNER still resolved to the
+    PREVIOUS build — so the "reproducible" build was never the one that ran.
+
+    Returns
+    -------
+    Path
+        The resolved real SIF (``<root>/<layer>/<layer>-<ts>.sif``).
+    """
+    root = Path(root)
+    ap = artifact_paths(root, layer, ts)
+    if not ap.sif.exists():
+        raise FileNotFoundError(f"Build artifact not found: {ap.sif}")
+
+    atomic_symlink(ap.layer_dir / f"{layer}.sif", Path(f"{layer}-{ts}.sif"))
+    atomic_symlink(ap.latest_symlink, Path(layer) / f"{layer}-{ts}.sif")
+    logger.info("Published %s-%s through both stable symlinks", layer, ts)
+    return ap.sif
+
+
+@supports_return_as
 def prune(root: str | Path, layer: str, retain: int) -> list[str]:
     """Prune old builds of ``layer``, keeping the ``retain`` most recent.
 
