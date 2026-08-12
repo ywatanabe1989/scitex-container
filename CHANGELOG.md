@@ -7,6 +7,55 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.2]
+
+### Changed
+
+- **The test suite no longer writes anything into site-packages.** 0.4.1
+  guarded the subprocess-coverage `.pth` so it stopped tracebacking; this
+  removes the `.pth` mechanism altogether, because guarding it fixed the
+  symptom and left the real defect standing.
+
+  That defect: the shim was **machine-wide state produced as a side effect of
+  collecting tests**, and the writer rewrote it whenever its content differed
+  — idempotent with respect to its own text, but **not monotonic with respect
+  to time**. Every checkout older than the fix is also a writer, so the rule
+  was last-writer-wins. Measured 2026-08-12: a freshly fixed shim was reverted
+  minutes later by a baseline checkout one commit behind, with no commit to
+  blame and no error to read. A fix whose precondition is "nobody runs an old
+  worktree" is not a fix — that condition is neither achievable nor checkable.
+
+  Subprocess coverage is now **session-scoped**: a temp directory holding a
+  `sitecustomize.py` is prepended to `PYTHONPATH` for the run and removed at
+  interpreter exit. Children inherit it; nothing else on the machine is
+  touched; there is no shared file for two checkouts to fight over.
+
+  It is also a **no-op when `coverage` is not importable** — there is nothing
+  to start, and putting a `sitecustomize` in front of every child process to
+  accomplish nothing is the cost being removed. (Note `pytest-cov` 7.x ships
+  no `.pth` of its own, so this shim *is* the subprocess-coverage mechanism;
+  deleting it outright would have silently dropped child-process coverage
+  rather than fixing anything.)
+
+  The generated `sitecustomize` **chains to any `sitecustomize` it shadows**.
+  Being first on `PYTHONPATH` puts it ahead of the stdlib directory, and
+  Debian/Ubuntu ship `/etc/python3.12/sitecustomize.py` (it installs apport's
+  crash handler). Shadowing that silently would have been a fresh instance of
+  the same family of bug: something that stops working with no error.
+
+### Note for operators
+
+Machines that ran an older suite still carry a stale
+`site-packages/_scitex_container_subprocess_coverage.pth`. Nothing in this
+release deletes it — deliberately, since removing it from `conftest` would
+mean this code still mutates site-packages, which is the practice being
+retired. Delete it once per environment, or let the next image rebuild clear
+it:
+
+```
+rm -f "$(python -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')/_scitex_container_subprocess_coverage.pth"
+```
+
 ## [0.4.1]
 
 ### Fixed

@@ -12,19 +12,26 @@ Two responsibilities:
 2. Subprocess coverage wiring — pins ``COVERAGE_PROCESS_START`` +
    ``COVERAGE_FILE`` at module-import time (force-set, not
    ``setdefault``; pytest-cov has already set ``COVERAGE_FILE`` to a
-   per-test tmp dir by the time this loads) and drops an idempotent
-   ``.pth`` shim into site-packages that calls
+   per-test tmp dir by the time this loads) and puts a SESSION-SCOPED
+   ``sitecustomize`` on ``PYTHONPATH`` that calls
    ``coverage.process_startup()`` in every child interpreter. Without
    this, ``subprocess.run([sys.executable, ...])`` coverage data is
    silently dropped — see
    ``~/proj/scitex-dev/src/scitex_dev/_skills/general/05_development_06_subprocess-coverage.md``.
+
+   This used to install a ``.pth`` into site-packages. It no longer writes
+   anything outside the session; see
+   :func:`_install_session_subprocess_coverage` for why that mattered.
 """
 
 from __future__ import annotations
 
+import atexit
+import importlib.util
 import os
+import shutil
 import sys
-import sysconfig
+import tempfile
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -54,52 +61,113 @@ os.environ["COVERAGE_PROCESS_START"] = str(_REPO_ROOT / "pyproject.toml")
 os.environ["COVERAGE_FILE"] = str(_REPO_ROOT / ".coverage")
 
 
-def _ensure_subprocess_coverage_shim() -> None:
-    """Drop an idempotent ``.pth`` file in site-packages that auto-starts
-    coverage in every child Python interpreter via
-    ``coverage.process_startup()``.
+# The text of the session-scoped ``sitecustomize`` handed to child
+# interpreters. Two responsibilities, in this order:
+#
+# 1. CHAIN to whatever ``sitecustomize`` we are shadowing. We are first on
+#    PYTHONPATH, which precedes the stdlib directory, so a system
+#    ``sitecustomize`` would otherwise silently never run. Debian/Ubuntu ship
+#    one (``/etc/python3.12/sitecustomize.py``) that installs apport's crash
+#    handler — measured present on this fleet's image. Shadowing it would be
+#    a fresh instance of exactly the bug this change exists to remove: a thing
+#    that stops working with no error and no diagnosis.
+# 2. Start coverage, guarded, only when asked.
+_SITECUSTOMIZE = '''\
+"""Session-scoped subprocess-coverage shim (scitex-container tests).
 
-    The shim is written in a very specific shape, and both halves matter.
+Injected via PYTHONPATH for the duration of one test session, then removed.
+Never installed into site-packages.
+"""
 
-    **Guard the import.** A ``.pth`` executes at interpreter startup, inside
-    ``site``, for EVERY Python process on the machine — long before any
-    application code exists to catch anything. The previous shim ran a bare
-    ``import coverage`` at line 1, so on any interpreter without coverage
-    installed, ``site`` printed a traceback to stderr and carried on. That is
-    every command in every container on this fleet: one ``curl | python3``
-    emitted four tracebacks before two lines of real output.
+import os
+import sys
 
-    The cost is not the noise. It is that people learn to skim past stderr,
-    which is exactly where the next real error will appear.
 
-    **Check the env var FIRST.** A non-test process now imports *nothing* —
-    it evaluates one ``os.environ.get`` and stops. Ordering the check before
-    the import is not merely a tidier way to spell the guard: it means the
-    overwhelming majority of processes stop paying for a coverage import they
-    were never going to use. A ``.pth`` should be the cheapest and quietest
-    thing in the process.
-    """
-    purelib = Path(sysconfig.get_paths()["purelib"])
-    pth = purelib / "_scitex_container_subprocess_coverage.pth"
-    shim = (
-        "import os\n"
-        "if os.environ.get('COVERAGE_PROCESS_START'):\n"
-        "    try:\n"
-        "        import coverage\n"
-        "    except ImportError:\n"
-        "        pass\n"
-        "    else:\n"
-        "        coverage.process_startup()\n"
-    )
+def _chain_shadowed_sitecustomize():
+    """Run the sitecustomize this file shadows, if any."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for entry in sys.path:
+        try:
+            directory = os.path.abspath(entry or ".")
+        except (TypeError, ValueError):
+            continue
+        if directory == here:
+            continue
+        candidate = os.path.join(directory, "sitecustomize.py")
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate) as handle:
+                source = handle.read()
+            exec(  # noqa: S102 - re-running the shadowed hook is the point
+                compile(source, candidate, "exec"),
+                {"__file__": candidate, "__name__": "sitecustomize"},
+            )
+        except Exception:
+            # A broken system hook must not take the child process with it.
+            pass
+        return
+
+
+_chain_shadowed_sitecustomize()
+
+if os.environ.get("COVERAGE_PROCESS_START"):
     try:
-        if not pth.exists() or pth.read_text() != shim:
-            pth.write_text(shim)
-    except OSError:
-        # site-packages may be read-only (e.g. system Python); silently skip —
-        # local dev venvs are writable and that's where this matters.
+        import coverage
+    except ImportError:
         pass
+    else:
+        coverage.process_startup()
+'''
 
 
-_ensure_subprocess_coverage_shim()
+def _install_session_subprocess_coverage() -> None:
+    """Enable coverage in CHILD interpreters for THIS SESSION ONLY.
+
+    Replaces a ``.pth`` written into site-packages. That older approach
+    worked, and was wrong in a way that took a while to see:
+
+    **It was machine-wide state produced as a side effect of collecting
+    tests.** A ``.pth`` in site-packages affects every Python process on the
+    box, forever, including processes that have nothing to do with this repo.
+
+    **And it did not stay fixed.** The writer rewrote the file whenever its
+    content differed, which is idempotent with respect to its own text but
+    NOT monotonic with respect to time. Any checkout older than the fix is
+    also a writer, so the rule was last-writer-wins: running the suite from a
+    stale worktree silently reverted the file. Measured on 2026-08-12 — a
+    fixed shim was reverted minutes later by a baseline checkout one commit
+    behind, with no commit to blame and no error to read. A fix whose
+    precondition is "nobody runs an old worktree" is not a fix, because that
+    condition is neither achievable nor checkable.
+
+    So the mechanism is now scoped to the session that wants it:
+
+    - a temp dir holding ``sitecustomize.py`` is prepended to ``PYTHONPATH``,
+      so children inherit it and nothing else on the machine is touched;
+    - it is removed at interpreter exit, so it cannot outlive the run;
+    - nothing is written to site-packages, so there is no shared file for two
+      checkouts to fight over and no requirement that any checkout be current.
+
+    It is also a no-op when ``coverage`` is not importable. There is nothing
+    to start in that case, and putting a ``sitecustomize`` on the path of
+    every child process to accomplish nothing is precisely the cost this
+    change is removing. (On this fleet's image coverage is in fact absent —
+    the old ``.pth`` was inert *and* noisy.)
+    """
+    if importlib.util.find_spec("coverage") is None:
+        return
+
+    shim_dir = Path(tempfile.mkdtemp(prefix="scitex-container-subproc-cov-"))
+    (shim_dir / "sitecustomize.py").write_text(_SITECUSTOMIZE)
+
+    previous = os.environ.get("PYTHONPATH", "")
+    parts = [str(shim_dir)] + ([previous] if previous else [])
+    os.environ["PYTHONPATH"] = os.pathsep.join(parts)
+
+    atexit.register(shutil.rmtree, shim_dir, ignore_errors=True)
+
+
+_install_session_subprocess_coverage()
 
 # EOF
