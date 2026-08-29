@@ -66,7 +66,6 @@ install_build_deps() {
         liblzma-dev \
         libncursesw5-dev \
         libreadline-dev \
-        libsqlite3-dev \
         libssl-dev \
         tk-dev \
         uuid-dev \
