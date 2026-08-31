@@ -11,10 +11,18 @@ in its source tree. Two outcomes:
 - Module installed BUT import fails (e.g. internal rename like
   `scitex_io._load_cache` → `scitex_io._loading._load_cache`) →
   test FAILS loudly.
-- Module NOT installed (peer standalone absent in the CI env) →
-  test is SKIPPED via `pytest.importorskip`. The umbrella's CI
-  (which installs every peer) catches cross-package renames.
+- Peer package NOT installed at all (standalone absent in a lean CI
+  env, optional extra, marker-gated dependency) → test is SKIPPED.
+
+The skip is taken on the ROOT package only (`pytest.importorskip` on
+`name.split(".")[0]`); the FULL dotted path is then hard-imported with
+`importlib.import_module`. Skipping on the full path would swallow the
+one failure this gate exists to catch — a renamed submodule of an
+INSTALLED peer raises ModuleNotFoundError just like an absent peer,
+so `importorskip(full_path)` reports the rename as green (PS-140).
 """
+
+import importlib
 
 import pytest
 
@@ -34,6 +42,9 @@ def test_cross_package_import(module_name):
     # Arrange
     # (parametrized module_name is the input)
     # Act
-    module = pytest.importorskip(module_name)
+    # Skip only when the PEER ITSELF is absent — judged on the root package.
+    pytest.importorskip(module_name.split(".")[0])
+    # The full dotted path is a hard import: a renamed submodule now FAILS.
+    module = importlib.import_module(module_name)
     # Assert
     assert module is not None
